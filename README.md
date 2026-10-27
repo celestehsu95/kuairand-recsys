@@ -118,10 +118,10 @@ Seven short-term signals, all count-windowed (last N events) so a replayed log p
 ## Serving
 
 - **Request path** (`serving/engine.py`): user vector from the two-tower, blended with the user's recent-click vector from Redis → FAISS top-200 (already-clicked items removed) → real-time features → ranker → top-20. Each stage is timed and returned with the response.
-- **Write-time aggregation**: every candidate needs its item's CTR over the last 200 exposures. Reading those windows on each request meant moving ~40K values per call (p99 over 1 s at 32 concurrent clients). A Redis Lua script now maintains each window's click count and size atomically on write, so a request reads two numbers per candidate with one `HMGET` (43x faster reads); the parity test covers the aggregates too.
+- **Write-time aggregation**: every candidate needs its item's CTR over the last 200 exposures. The first load test showed real-time requests spending 42 ms in feature lookup, because each request read every candidate's full window (~40K values). A Redis Lua script now maintains each window's click count and size atomically on write, so a request reads two numbers per candidate with one `HMGET`. Feature lookup dropped to 1.3 ms and single-client p50/p99 from 50/108 ms to 5/20 ms; the parity test covers the aggregates too.
 - **Streaming**: the API produces click events to Kafka keyed by user id, so each user's events stay ordered on one partition. The worker applies each poll batch to Redis in a single pipelined round trip and tracks Kafka→Redis lag.
 - **Bootstrap**: before going live, the train+val history is replayed through the same feature logic and bulk-loaded into Redis, so the online store starts in exactly the state the model expects.
-- **Load test**: closed-loop clients at several concurrency levels report QPS, p50/p95/p99 and the server-side stage breakdown.
+- **Load test**: closed-loop clients at several concurrency levels report QPS, p50/p95/p99 and the server-side stage breakdown. The client, API (2 workers), Redis and Kafka all share one laptop, so the high-concurrency rows mostly measure CPU contention on that machine: client-side latency grows far beyond the server-side stage times.
 
 ## Run it
 
