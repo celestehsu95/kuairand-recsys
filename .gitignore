@@ -1,0 +1,10 @@
+data/
+checkpoints/
+artifacts/
+artifacts_synth/
+results_synth/
+__pycache__/
+*.pyc
+.venv/
+*.tar.gz
+.DS_Store

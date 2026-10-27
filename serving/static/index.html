@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Real-time Feed Demo</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #262d36; --text: #e6edf3; --muted: #8b949e;
+    --accent: #f78166; --good: #3fb950; --info: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: 300px 1fr; gap: 20px; padding: 20px 24px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 16px; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 16px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .users { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: 999px; padding: 4px 10px; cursor: pointer; font: inherit; font-size: 12px; }
+  .chip.active { background: var(--info); border-color: var(--info); color: #0e1116; font-weight: 600; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; }
+  .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+  .toggle input { accent-color: var(--good); width: 16px; height: 16px; }
+  .muted { color: var(--muted); }
+  .stat { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); margin: 8px 0 6px; }
+  .bar span { display: block; height: 100%; }
+  .legend { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-size: 12px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+  .recent { display: flex; flex-wrap: wrap; gap: 6px; min-height: 24px; }
+  .recent .tag { font-size: 12px; padding: 2px 8px; border-radius: 6px; }
+  .feed { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; position: relative; transition: border-color .3s, transform .3s; }
+  .card.new { border-color: var(--good); }
+  .thumb { height: 92px; display: flex; align-items: flex-end; padding: 10px; font-weight: 700; font-size: 15px; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.4); }
+  .meta { padding: 10px; font-size: 12px; }
+  .meta .line { display: flex; justify-content: space-between; color: var(--muted); }
+  .rank { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,.55); color: #fff; border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 600; }
+  .badge { position: absolute; top: 8px; right: 8px; border-radius: 6px; padding: 1px 7px; font-size: 11px; font-weight: 700; }
+  .badge.new { background: var(--good); color: #0e1116; }
+  .badge.up { background: var(--info); color: #0e1116; }
+  .card button { width: 100%; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--accent); padding: 8px; cursor: pointer; font: inherit; font-weight: 600; }
+  .card button:hover { background: rgba(247,129,102,.08); }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; opacity: 0; transition: opacity .25s; }
+  .toast.show { opacity: 1; }
+  .err { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Two-stage recommender · live demo</h1>
+  <span class="sub">Two-tower retrieval → real-time features (Kafka → Redis) → ranker</span>
+</header>
+<main>
+  <aside>
+    <div class="panel">
+      <h2>User</h2>
+      <div class="users" id="users"></div>
+    </div>
+    <div class="panel">
+      <h2>Mode</h2>
+      <label class="toggle row"><span>Real-time personalization</span><input type="checkbox" id="rt" checked></label>
+      <label class="toggle row"><span>Auto-refresh (3s)</span><input type="checkbox" id="auto"></label>
+    </div>
+    <div class="panel">
+      <h2>Recent clicks (from Redis)</h2>
+      <div class="recent" id="recent"><span class="muted">—</span></div>
+    </div>
+    <div class="panel">
+      <h2>Latency breakdown</h2>
+      <div class="row"><span class="muted">Server total</span><span class="stat" id="total">—</span></div>
+      <div class="bar" id="bar"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="panel">
+      <h2>Event stream</h2>
+      <div class="row"><span class="muted">Events processed</span><span class="stat" id="ev">—</span></div>
+      <div class="row"><span class="muted">Kafka → Redis lag</span><span class="stat" id="lag">—</span></div>
+    </div>
+  </aside>
+  <section>
+    <div class="feed" id="feed"></div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const COLORS = { user_vector: "#a371f7", retrieval: "#58a6ff", features: "#3fb950", ranking: "#f78166" };
+let uid = null, prev = new Map();
+const $ = (id) => document.getElementById(id);
+const hue = (tag) => (parseInt(tag || "0", 10) * 47) % 360;
+const grad = (tag) => `linear-gradient(135deg, hsl(${hue(tag)} 65% 42%), hsl(${(hue(tag) + 40) % 360} 70% 28%))`;
+
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1600); }
+
+async function loadUsers() {
+  const { users } = await (await fetch("/demo/users")).json();
+  $("users").innerHTML = users.map((u) => `<button class="chip" data-uid="${u}">${u}</button>`).join("");
+  $("users").onclick = (e) => { if (e.target.dataset.uid) selectUser(+e.target.dataset.uid); };
+  if (users.length) selectUser(users[0]);
+}
+
+function selectUser(u) {
+  uid = u; prev = new Map();
+  document.querySelectorAll(".chip").forEach((c) => c.classList.toggle("active", +c.dataset.uid === u));
+  refresh();
+}
+
+async function refresh() {
+  if (!uid) return;
+  try {
+    const r = await fetch(`/recommend?uid=${uid}&k=20&realtime=${$("rt").checked}`);
+    if (!r.ok) throw new Error(await r.text());
+    render(await r.json());
+  } catch (e) { $("feed").innerHTML = `<p class="err">${e.message}</p>`; }
+}
+
+function render(d) {
+  const first = prev.size === 0;
+  $("feed").innerHTML = d.items.map((it, i) => {
+    const before = prev.get(it.iid);
+    let badge = "";
+    if (!first && before === undefined) badge = `<span class="badge new">NEW</span>`;
+    else if (!first && before > i) badge = `<span class="badge up">▲${before - i}</span>`;
+    const f = it.features ? `<div class="line"><span>sim ${it.features.sim_recent}</span><span>tag-match ${it.features.tag_match}</span></div>` : "";
+    return `<div class="card ${badge.includes("new") ? "new" : ""}">
+      <div class="thumb" style="background:${grad(it.tag)}">#tag ${it.tag ?? "?"}</div>
+      <span class="rank">${i + 1}</span>${badge}
+      <div class="meta">
+        <div class="line"><span>video ${it.video_id}</span><span>p=${it.score}</span></div>
+        <div class="line"><span>author ${it.author_id}</span><span>retr #${it.retrieval_rank}</span></div>${f}
+      </div>
+      <button data-iid="${it.iid}">Watch ▶</button>
+    </div>`;
+  }).join("");
+  prev = new Map(d.items.map((it, i) => [it.iid, i]));
+
+  $("recent").innerHTML = d.recent_clicks.length
+    ? d.recent_clicks.map((c) => `<span class="tag" style="background:${grad(c.tag)}">#${c.tag} · ${c.video_id}</span>`).join("")
+    : `<span class="muted">${$("rt").checked ? "no recent clicks" : "real-time off"}</span>`;
+
+  const t = d.timings_ms, parts = ["user_vector", "retrieval", "features", "ranking"];
+  $("total").textContent = `${t.total.toFixed(1)} ms`;
+  $("bar").innerHTML = parts.map((p) => `<span style="width:${(100 * t[p]) / Math.max(t.total, 0.01)}%;background:${COLORS[p]}"></span>`).join("");
+  $("legend").innerHTML = parts.map((p) => `<span><i class="dot" style="background:${COLORS[p]}"></i>${p.replace("_", " ")}</span><span class="stat">${t[p].toFixed(2)} ms</span>`).join("");
+}
+
+$("feed").onclick = async (e) => {
+  const iid = e.target.dataset.iid;
+  if (!iid) return;
+  const r = await fetch("/event", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ uid, iid: +iid, clicked: true }) });
+  if (!r.ok) { toast("Event failed: is Kafka up?"); return; }
+  toast("Click sent → Kafka");
+  setTimeout(refresh, 400);  // give the worker a moment to update Redis
+};
+
+async function pollStats() {
+  try {
+    const s = await (await fetch("/stats")).json();
+    $("ev").textContent = s.events_processed != null ? s.events_processed.toLocaleString() : "—";
+    $("lag").textContent = s.lag_ema_ms != null ? `${s.lag_ema_ms.toFixed(0)} ms` : "—";
+  } catch {}
+}
+
+$("rt").onchange = () => { prev = new Map(); refresh(); };
+setInterval(() => { if ($("auto").checked) refresh(); }, 3000);
+setInterval(pollStats, 2000);
+loadUsers(); pollStats();
+</script>
+</body>
+</html>
